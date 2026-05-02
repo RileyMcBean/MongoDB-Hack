@@ -5,11 +5,11 @@ have up-to-date context on the next request.
 """
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from ..repositories import MemoryEntryRepository
 from ..models import MemoryEntry, MemoryType
+from .embeddings import embed_text
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,12 @@ def _get_llm():
 
 async def _write_semantic_memory(db: AsyncIOMotorDatabase, content: str, tags: list[str]):
     try:
+        embedding = await embed_text(content)
         await MemoryEntryRepository(db).insert(MemoryEntry(
             type=MemoryType.semantic,
             content=content,
             tags=tags,
+            embedding=embedding,
         ))
         logger.info(f"Semantic memory written: {content[:80]}...")
     except Exception as e:

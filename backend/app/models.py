@@ -99,6 +99,7 @@ class MemoryEntry(BaseModel):
     tags: list[str] = Field(default_factory=list)
     request_id: Optional[str] = None
     created_at: datetime = Field(default_factory=_now)
+    embedding: list[float] = Field(default_factory=list)  # 768-dim vector, empty if not yet embedded
 
 
 class GeneratedDocument(BaseModel):

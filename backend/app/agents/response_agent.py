@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from .state import AccessAgentState
 from .llm import get_llm
+from .embeddings import embed_text
 from ..repositories import MemoryEntryRepository
 from ..models import MemoryEntry, MemoryType
 
@@ -156,11 +157,13 @@ _See: GET /requests/{request_id}/audit_
         f"Decision: {decision_label}. Summary: {intent_summary}"
     )
     try:
+        embedding = await embed_text(memory_content)
         await MemoryEntryRepository(db).insert(MemoryEntry(
             type=MemoryType.episodic,
             content=memory_content,
             tags=[username, asset_name, tier, required_role or ""],
             request_id=request_id or None,
+            embedding=embedding,
         ))
     except Exception as e:
         logger.error(f"Failed to write episodic memory: {e}")

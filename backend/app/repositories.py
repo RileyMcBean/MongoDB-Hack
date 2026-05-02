@@ -179,6 +179,32 @@ class MemoryEntryRepository:
     async def find_recent(self, limit: int = 10) -> list[dict]:
         return await self.col.find().sort("created_at", -1).limit(limit).to_list(length=limit)
 
+    async def vector_search(self, query_vector: list[float], limit: int = 8) -> list[dict]:
+        """Return the most semantically relevant memories using Atlas Vector Search."""
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "memory_vector_index",
+                    "path": "embedding",
+                    "queryVector": query_vector,
+                    "numCandidates": limit * 10,
+                    "limit": limit,
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "type": 1,
+                    "content": 1,
+                    "tags": 1,
+                    "request_id": 1,
+                    "created_at": 1,
+                    "score": {"$meta": "vectorSearchScore"},
+                }
+            },
+        ]
+        return await self.col.aggregate(pipeline).to_list(length=limit)
+
 
 class GeneratedDocumentRepository:
     def __init__(self, db: AsyncIOMotorDatabase):

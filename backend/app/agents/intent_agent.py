@@ -9,6 +9,7 @@ import json
 import logging
 from .state import AccessAgentState
 from .llm import get_llm
+from .embeddings import embed_text
 from ..repositories import UserRepository, DataAssetRepository, MemoryEntryRepository
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,13 @@ async def intent_agent(state: AccessAgentState) -> dict:
         if a.get("_id"):
             a["_id"] = str(a["_id"])
 
-    # ── 3. Retrieve relevant episodic + semantic memories ────────────────────
+    # ── 3. Retrieve relevant memories via vector search (recency fallback) ───
     memory_repo = MemoryEntryRepository(db)
-    past_memories = await memory_repo.find_recent(limit=10)
+    query_vector = await embed_text(raw_request)
+    if query_vector:
+        past_memories = await memory_repo.vector_search(query_vector, limit=8)
+    else:
+        past_memories = await memory_repo.find_recent(limit=8)
     for m in past_memories:
         if m.get("_id"):
             m["_id"] = str(m["_id"])
