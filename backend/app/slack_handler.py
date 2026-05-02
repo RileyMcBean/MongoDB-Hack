@@ -192,8 +192,9 @@ async def handle_message(event: dict, say, client):
         thread_ts=thread_ts,
         channel=channel,
     )
+    # Post the interactive approval card to the private approvals channel only
     await client.chat_postMessage(
-        channel=channel,
+        channel=settings.slack_approvals_channel,
         blocks=build_approval_blocks(
             requester=username,
             asset_name=asset["name"],
@@ -206,99 +207,136 @@ async def handle_message(event: dict, say, client):
     )
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _is_admin(client, slack_user_id: str) -> bool:
+    """Return True if the Slack user is a workspace admin or owner."""
+    try:
+        info = await client.users_info(user=slack_user_id)
+        user = info["user"]
+        return user.get("is_admin", False) or user.get("is_owner", False)
+    except Exception as e:
+        logger.error(f"users_info check failed for {slack_user_id}: {e}")
+        return False
+
+
 # ── Button handlers ───────────────────────────────────────────────────────────
 
 @bolt_app.action("approve_request")
 async def handle_approve(ack, body, client):
     await ack()
-    payload = json.loads(body["actions"][0]["value"])
-    request_id = payload["request_id"]
-    token = payload["token"]
     approver_slack_id = body["user"]["id"]
     channel = body["container"]["channel_id"]
     message_ts = body["container"]["message_ts"]
 
-    db = get_db()
-    task_repo = ApprovalTaskRepository(db)
-    req_repo = AccessRequestRepository(db)
-    audit_repo = AuditEventRepository(db)
-
-    task = await task_repo.find_by_request_id(request_id)
-    if not task or task["approval_token"] != token:
-        await client.chat_postMessage(channel=channel, text="⚠️ Invalid or expired approval token.")
-        return
-    if task["status"] != RequestStatus.pending.value:
-        await client.chat_postMessage(channel=channel, text="⚠️ This request has already been decided.")
+    if not await _is_admin(client, approver_slack_id):
+        await client.chat_postMessage(
+            channel=channel,
+            text="⛔ Only workspace admins can approve access requests.",
+        )
         return
 
-    req = await req_repo.find_by_id(request_id)
-    await task_repo.decide(token, RequestStatus.approved, "Approved via Slack")
-    await audit_repo.insert(AuditEvent(
-        request_id=request_id, event_type="request_approved",
-        description=f"Approved via Slack by {approver_slack_id}",
-        actor=approver_slack_id,
-    ))
-    await execute_grant(db, request_id=request_id, username=req["user_id"], role_name=req["required_role_id"])
+    try:
+        payload = json.loads(body["actions"][0]["value"])
+        request_id = payload["request_id"]
+        token = payload["token"]
 
-    await client.chat_update(
-        channel=channel,
-        ts=message_ts,
-        text=f"✅ Approved by <@{approver_slack_id}>",
-        blocks=[{
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"✅ *Approved* by <@{approver_slack_id}>\n"
-                    f"Role `{req['required_role_id']}` granted to *{req['user_id']}*\n"
-                    f"_Request ID: `{request_id}`_"
-                ),
-            },
-        }],
-    )
+        db = get_db()
+        task_repo = ApprovalTaskRepository(db)
+        req_repo = AccessRequestRepository(db)
+        audit_repo = AuditEventRepository(db)
+
+        task = await task_repo.find_by_request_id(request_id)
+        if not task or task["approval_token"] != token:
+            await client.chat_postMessage(channel=channel, text="⚠️ Invalid or expired approval token.")
+            return
+        if task["status"] != RequestStatus.pending.value:
+            await client.chat_postMessage(channel=channel, text="⚠️ This request has already been decided.")
+            return
+
+        req = await req_repo.find_by_id(request_id)
+        await task_repo.decide(token, RequestStatus.approved, "Approved via Slack")
+        await audit_repo.insert(AuditEvent(
+            request_id=request_id, event_type="request_approved",
+            description=f"Approved via Slack by {approver_slack_id}",
+            actor=approver_slack_id,
+        ))
+        await execute_grant(db, request_id=request_id, username=req["user_id"], role_name=req["required_role_id"])
+
+        await client.chat_update(
+            channel=channel,
+            ts=message_ts,
+            text=f"✅ Approved by <@{approver_slack_id}>",
+            blocks=[{
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"✅ *Approved* by <@{approver_slack_id}>\n"
+                        f"Role `{req['required_role_id']}` granted to *{req['user_id']}*\n"
+                        f"_Request ID: `{request_id}`_"
+                    ),
+                },
+            }],
+        )
+    except Exception as e:
+        logger.error(f"handle_approve error: {e}", exc_info=True)
+        await client.chat_postMessage(channel=channel, text=f"⚠️ Approval failed: {e}")
 
 
 @bolt_app.action("reject_request")
 async def handle_reject(ack, body, client):
     await ack()
-    payload = json.loads(body["actions"][0]["value"])
-    request_id = payload["request_id"]
-    token = payload["token"]
     approver_slack_id = body["user"]["id"]
     channel = body["container"]["channel_id"]
     message_ts = body["container"]["message_ts"]
 
-    db = get_db()
-    task_repo = ApprovalTaskRepository(db)
-    req_repo = AccessRequestRepository(db)
-    audit_repo = AuditEventRepository(db)
-
-    task = await task_repo.find_by_request_id(request_id)
-    if not task or task["approval_token"] != token:
-        await client.chat_postMessage(channel=channel, text="⚠️ Invalid or expired approval token.")
-        return
-    if task["status"] != RequestStatus.pending.value:
-        await client.chat_postMessage(channel=channel, text="⚠️ This request has already been decided.")
+    if not await _is_admin(client, approver_slack_id):
+        await client.chat_postMessage(
+            channel=channel,
+            text="⛔ Only workspace admins can reject access requests.",
+        )
         return
 
-    req = await req_repo.find_by_id(request_id)
-    await task_repo.decide(token, RequestStatus.rejected, "Rejected via Slack")
-    await req_repo.update_status(request_id, RequestStatus.rejected)
-    await audit_repo.insert(AuditEvent(
-        request_id=request_id, event_type="request_rejected",
-        description=f"Rejected via Slack by {approver_slack_id}",
-        actor=approver_slack_id,
-    ))
+    try:
+        payload = json.loads(body["actions"][0]["value"])
+        request_id = payload["request_id"]
+        token = payload["token"]
 
-    await client.chat_update(
-        channel=channel,
-        ts=message_ts,
-        text=f"❌ Rejected by <@{approver_slack_id}>",
-        blocks=[{
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"❌ *Rejected* by <@{approver_slack_id}>\nAccess denied for *{req['user_id']}*",
-            },
-        }],
-    )
+        db = get_db()
+        task_repo = ApprovalTaskRepository(db)
+        req_repo = AccessRequestRepository(db)
+        audit_repo = AuditEventRepository(db)
+
+        task = await task_repo.find_by_request_id(request_id)
+        if not task or task["approval_token"] != token:
+            await client.chat_postMessage(channel=channel, text="⚠️ Invalid or expired approval token.")
+            return
+        if task["status"] != RequestStatus.pending.value:
+            await client.chat_postMessage(channel=channel, text="⚠️ This request has already been decided.")
+            return
+
+        req = await req_repo.find_by_id(request_id)
+        await task_repo.decide(token, RequestStatus.rejected, "Rejected via Slack")
+        await req_repo.update_status(request_id, RequestStatus.rejected)
+        await audit_repo.insert(AuditEvent(
+            request_id=request_id, event_type="request_rejected",
+            description=f"Rejected via Slack by {approver_slack_id}",
+            actor=approver_slack_id,
+        ))
+
+        await client.chat_update(
+            channel=channel,
+            ts=message_ts,
+            text=f"❌ Rejected by <@{approver_slack_id}>",
+            blocks=[{
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"❌ *Rejected* by <@{approver_slack_id}>\nAccess denied for *{req['user_id']}*",
+                },
+            }],
+        )
+    except Exception as e:
+        logger.error(f"handle_reject error: {e}", exc_info=True)
+        await client.chat_postMessage(channel=channel, text=f"⚠️ Rejection failed: {e}")

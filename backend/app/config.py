@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
     slack_request_channel: str = "access-requests"
+    slack_approvals_channel: str = "access-approvals"
 
     model_config = {"env_file": ".env"}
 
