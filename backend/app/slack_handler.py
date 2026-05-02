@@ -284,6 +284,7 @@ async def handle_approve(ack, body, client):
         ))
         await execute_grant(db, request_id=request_id, username=req["user_id"], role_name=req["required_role_id"])
 
+        # Update the approval card in #access-approvals
         await client.chat_update(
             channel=channel,
             ts=message_ts,
@@ -299,6 +300,17 @@ async def handle_approve(ack, body, client):
                     ),
                 },
             }],
+        )
+
+        # Notify the requester in the public channel
+        await client.chat_postMessage(
+            channel=settings.slack_request_channel,
+            text=(
+                f"✅ *Access approved* for *{req['user_id']}*\n"
+                f"Your request has been reviewed and approved by <@{approver_slack_id}>. "
+                f"Role `{req['required_role_id']}` has been granted.\n"
+                f"_Request ID: `{request_id}`_"
+            ),
         )
     except Exception as e:
         logger.error(f"handle_approve error: {e}", exc_info=True)
@@ -346,6 +358,17 @@ async def handle_reject(ack, body, client):
             actor=approver_slack_id,
         ))
 
+        # Pull the policy rationale from the audit trail to explain the rejection
+        events = await audit_repo.find_by_request_id(request_id)
+        approval_event = next(
+            (e for e in events if e["event_type"] == "approval_requested"), None
+        )
+        rationale = ""
+        if approval_event:
+            raw = approval_event.get("description", "")
+            rationale = raw.replace("Approval required. Rationale: ", "").strip()
+
+        # Update the approval card in #access-approvals
         await client.chat_update(
             channel=channel,
             ts=message_ts,
@@ -357,6 +380,19 @@ async def handle_reject(ack, body, client):
                     "text": f"❌ *Rejected* by <@{approver_slack_id}>\nAccess denied for *{req['user_id']}*",
                 },
             }],
+        )
+
+        # Notify the requester in the public channel with the reason
+        reason_text = f"\n\n*Reason:* {rationale}" if rationale else ""
+        await client.chat_postMessage(
+            channel=settings.slack_request_channel,
+            text=(
+                f"❌ *Access request denied* for *{req['user_id']}*\n"
+                f"Your request for role `{req['required_role_id']}` was reviewed and rejected "
+                f"by <@{approver_slack_id}>.{reason_text}\n\n"
+                f"If you believe this decision is incorrect, please contact your manager or the data governance team.\n"
+                f"_Request ID: `{request_id}`_"
+            ),
         )
     except Exception as e:
         logger.error(f"handle_reject error: {e}", exc_info=True)
