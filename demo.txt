@@ -1,0 +1,207 @@
+Access Agent — Live Demo Scripts                                                                                                                            
+                                                                                                                                                              
+  Before every demo: backend running, tunnel active and both Slack URLs updated, Atlas open in a second window.                                               
+                                                                                                                                                              
+  ---                                                                                                                                                         
+  Demo 1: Auto-Grant (Low Risk) — ~3 minutes                                                                                                                  
+                                                                                                                                                              
+  Story: Alice needs sales data. The agent understands her in plain English, evaluates policy, and grants access instantly — no human involved.               
+                                                                                                                                                              
+  Step 1 — Reset                                                                                                                                              
+                                                                                                                                                              
+  python seed.py                                                                                                                                              
+  Atlas evidence → users → { "username": "alice" } → show current_roles: []
+                                                                                                                                                              
+  Step 2 — Alice sends the request
+                                                                                                                                                              
+  In #access-requests as alice:                             
+  I need access to the sales reporting dashboard to build a Q2 finance report                                                                                 
+                                                                             
+  Step 3 — Bot replies with contextual message
+                                                                                                                                                              
+  The reply references "Q2 finance report" — not a template. Show this to the room.                                                                           
+                                                                                                                                                              
+  Step 4 — Show the policy is a DB rule, not AI                                                                                                               
+                                                            
+  Atlas → approval_policies → { "tier": "low" } → point to auto_grant: true, requires_approval: false                                                         
+                                                            
+  ▎ "The LLM matched the asset. The database decided the outcome."                                                                                            
+                                                            
+  Step 5 — Show the role landed                                                                                                                               
+                                                            
+  Atlas → users → { "username": "alice" } → current_roles: ["reporting_reader"]                                                                               
+  This is a $addToSet. Synthetic, auditable, reversible.    
+                                                                                                                                                              
+  Step 6 — Show the full audit trail                        
+                                                                                                                                                              
+  Open browser: GET http://localhost:8000/requests/<request_id>/audit                                                                                         
+  Walk through all five events in order: request_received → asset_matched (actor: intent_agent) → policy_evaluated (actor: policy_agent) → grant_executed →
+  doc generated.                                                                                                                                              
+                                                            
+  Step 7 — Open the generated document                                                                                                                        
+                                                            
+  GET http://localhost:8000/docs/<request_id>                                                                                                                 
+  Or Atlas → generated_documents → { "request_id": "<id>" }
+  Show: LLM-written justification, the exact $addToSet that ran, the rollback command.                                                                        
+                                                                                                                                                              
+  Step 8 — Show memory was written                                                                                                                            
+                                                                                                                                                              
+  Atlas → memory_entries → { "tags": "alice" } → point to type: "episodic", content, and embedding (768-float array).                                         
+                                                            
+  ---                                                                                                                                                         
+  Demo 2: Approval → Rejection with Reason — ~5 minutes     
+                                                       
+  Story: Bob requests PII data. The agent routes it to an admin-only channel. Admin rejects with a reason via a form. Bob gets notified with the reason.
+  Nothing was ever granted.                                                                                                                                   
+   
+  Step 1 — Reset                                                                                                                                              
+                                                            
+  python seed.py
+  Atlas → approval_tasks → {} → confirm zero documents
+                                                                                                                                                              
+  Step 2 — Bob sends the request
+                                                                                                                                                              
+  In #access-requests as bob:                               
+  I need access to customer PII data for my churn analysis model
+                                                                
+  Step 3 — Show the pending reply
+                                                                                                                                                              
+  Bot explains in plain English why this needs approval and who will review it.                                                                               
+                                                                                                                                                              
+  Step 4 — Switch to #access-approvals                                                                                                                        
+                                                            
+  Interactive card appears: requester, asset, sensitivity high, role pii_reader, two buttons.                                                                 
+   
+  ▎ "This channel is private. Bob cannot see this card."                                                                                                      
+                                                            
+  Step 5 — Show pending state in Atlas                                                                                                                        
+                                                            
+  Atlas → approval_tasks → { "request_id": "<id>" } → status: "pending", approval_token                                                                       
+  Atlas → access_requests → { "user_id": "bob", "status": "pending" } → risk_tier: "high"
+                                                                                                                                                              
+  Step 6 — Admin clicks Reject                              
+                                                                                                                                                              
+  A modal opens asking for a reason. Type:                                                                                                                    
+  Churn model does not require raw PII. Please use the anonymised analytics events dataset instead.
+  Click Confirm Rejection.                                                                                                                                    
+                                                                                                                                                              
+  Step 7 — Show Bob's notification in #access-requests
+                                                                                                                                                              
+  The bot posts the rejection reason in full, tagging the admin who rejected it.                                                                              
+                                                                                                                                                              
+  Step 8 — Prove nothing was granted                                                                                                                          
+                                                            
+  Atlas → audit_events → { "request_id": "<id>" } → walk the events. Show there is no grant_executed event.                                                   
+  Atlas → users → { "username": "bob" } → current_roles: []
+  Atlas → approval_tasks → show status: "rejected", reason field with the full text.                                                                          
+                                                                                                                                                              
+  ---                                                                                                                                                         
+  Demo 3: Memory System + Self-Service Revoke — ~5 minutes                                                                                                    
+                                                                                                                                                              
+  Story: We show the memory growing after each decision, then prove vector search is working, then alice revokes her own access in plain English.
+                                                                                                                                                              
+  Step 1 — Reset + pre-grant alice                                                                                                                            
+                                                                                                                                                              
+  python seed.py                                                                                                                                              
+  As alice in #access-requests:                             
+  I need access to the sales reporting dashboard for the Q2 review
+  Wait for auto-grant.
+                      
+  Atlas → memory_entries → { "tags": "alice" } → 1 document, type: "episodic", with embedding array.                                                          
+                                                                                                                                                              
+  Step 2 — Make a second request to grow memory                                                                                                               
+                                                                                                                                                              
+  As alice in #access-requests:                                                                                                                               
+  Can I also get read access to the product catalog?        
+  Atlas → memory_entries → { "tags": "alice" } → now 2 documents. Memory is growing.
+
+  Step 3 — Show the vector search index                                                                                                                       
+   
+  In Atlas → Search Indexes on access_agent database → find memory_vector_index on memory_entries.                                                            
+  Show: path: "embedding", numDimensions: 768, similarity: "cosine".
+                                                                                                                                                              
+  ▎ "This is semantic search, not keyword matching."        
+                                                                                                                                                              
+  Step 4 — Show memory retrieval in action                  
+
+  As bob in #access-requests:                                                                                                                                 
+  I need reporting access for my analytics work
+  Before sending, explain: "The intent agent will embed this message and run $vectorSearch against the 768-dim index — alice's past requests come back as     
+  context for the LLM."                                                                                                                                  
+  Send it. Bob gets auto-granted.                                                                                                                             
+                                 
+  Atlas → memory_entries → {} → now 3 documents. Count them.                                                                                                  
+                                                                                                                                                              
+  Step 5 — Alice revokes her own access                                                                                                                       
+                                                                                                                                                              
+  As alice in #access-requests:                             
+  remove my access to the sales reporting dashboard
+  Bot replies with revoke confirmation and the original request ID.
+
+  Step 6 — Show the role was pulled                                                                                                                           
+   
+  Atlas → users → { "username": "alice" } → current_roles no longer contains reporting_reader.                                                                
+                                                            
+  Step 7 — Show the complete lifecycle in the audit trail                                                                                                     
+                                                            
+  Atlas → audit_events → { "request_id": "<alice's original request id>" } → walk all events:                                                                 
+  1. request_received
+  2. asset_matched                                                                                                                                            
+  3. policy_evaluated                                       
+  4. grant_executed                                                                                                                                           
+  5. revoke_requested_via_slack — actor: alice
+  6. grant_rolled_back — actor: system                                                                                                                        
+                                                            
+  ▎ "Every access event in the system's lifetime. Grant to revoke. Full provenance."
+                                                                                                                                                              
+  Step 8 — Closing shot                                                                                                                                       
+                                                                                                                                                              
+  Atlas → audit_events → {} sorted timestamp: -1 → the full log from all three demos.                                                                         
+                                                            
+  ---                                                                                                                                                         
+  Quick Reference                                           
+
+  ┌──────┬───────┬───────────────────┬─────────────────────────────────────────────────────────────────────────────┐
+  │ Demo │  Who  │      Channel      │                                   Message                                   │
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤
+  │ 1    │ alice │ #access-requests  │ I need access to the sales reporting dashboard to build a Q2 finance report │
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤
+  │ 2    │ bob   │ #access-requests  │ I need access to customer PII data for my churn analysis model              │                                          
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤
+  │ 2    │ admin │ #access-approvals │ Click Reject → type reason                                                  │                                          
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤                                          
+  │ 3a   │ alice │ #access-requests  │ I need access to the sales reporting dashboard for the Q2 review            │
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤                                          
+  │ 3b   │ alice │ #access-requests  │ Can I also get read access to the product catalog?                          │
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤
+  │ 3c   │ bob   │ #access-requests  │ I need reporting access for my analytics work                               │
+  ├──────┼───────┼───────────────────┼─────────────────────────────────────────────────────────────────────────────┤                                          
+  │ 3d   │ alice │ #access-requests  │ remove my access to the sales reporting dashboard                           │
+  └──────┴───────┴───────────────────┴─────────────────────────────────────────────────────────────────────────────┘                                          
+                                                            
+  Atlas Filters Cheat Sheet
+
+  ┌───────────────────────────┬─────────────────────┬───────────────────────────────────────────┐                                                             
+  │       What to show        │     Collection      │                  Filter                   │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ User roles (before/after) │ users               │ { "username": "alice" }                   │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤
+  │ Low-risk policy           │ approval_policies   │ { "tier": "low" }                         │                                                             
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤
+  │ High-risk policy          │ approval_policies   │ { "tier": "high" }                        │                                                             
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤
+  │ Pending approval          │ access_requests     │ { "user_id": "bob", "status": "pending" } │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ Rejection with reason     │ approval_tasks      │ { "request_id": "<id>" }                  │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ All memories              │ memory_entries      │ {}                                        │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ Alice's episodic memories │ memory_entries      │ { "tags": "alice" }                       │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ Request audit trail       │ audit_events        │ { "request_id": "<id>" }                  │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ All events newest first   │ audit_events        │ {} sort timestamp: -1                     │
+  ├───────────────────────────┼─────────────────────┼───────────────────────────────────────────┤                                                             
+  │ Generated grant doc       │ generated_documents │ { "request_id": "<id>" }                  │
+  └───────────────────────────┴─────────────────────┴───────────────────────────────────────────┘                                                             
+                                                            
