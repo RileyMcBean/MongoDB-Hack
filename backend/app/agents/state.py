@@ -9,6 +9,8 @@ class AccessAgentState(TypedDict):
     raw_request: str
 
     # Intent agent outputs
+    intent_type: str             # "grant" | "revoke"
+    target_username: str         # usually same as username, but admin can specify another user
     user_profile: dict
     candidate_assets: list[dict]
     past_memories: list[dict]

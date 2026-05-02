@@ -45,6 +45,8 @@ async def run_access_agent(
         "username": username,
         "raw_request": raw_request,
         "request_id": request_id,
+        "intent_type": "grant",
+        "target_username": username,
         "user_profile": {},
         "candidate_assets": [],
         "past_memories": [],

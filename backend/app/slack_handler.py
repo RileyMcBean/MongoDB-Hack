@@ -154,9 +154,41 @@ async def handle_message(event: dict, say, client):
 
     matched_asset = result.get("matched_asset")
     required_role = result.get("required_role")
+    intent_type = result.get("intent_type", "grant")
+    target_username = result.get("target_username") or username
 
     if not matched_asset or not required_role:
         await say(text=result.get("slack_message", "I couldn't match your request to a known data asset."), thread_ts=thread_ts, channel=channel)
+        return
+
+    # ── Revoke flow ───────────────────────────────────────────────────────────
+    if intent_type == "revoke":
+        existing_grant = await AccessRequestRepository(db).find_active_grant_for_role(
+            target_username, required_role
+        )
+        if not existing_grant:
+            await say(
+                text=f"I couldn't find an active `{required_role}` grant for *{target_username}* to revoke.",
+                thread_ts=thread_ts,
+                channel=channel,
+            )
+            return
+
+        revoke_request_id = str(existing_grant["_id"])
+        from .grant_service import rollback_grant
+        await rollback_grant(db, request_id=revoke_request_id, username=target_username, role_name=required_role)
+        await audit_repo.insert(AuditEvent(
+            request_id=revoke_request_id,
+            event_type="revoke_requested_via_slack",
+            description=f"Revoke of '{required_role}' for '{target_username}' requested by '{username}' via Slack",
+            actor=username,
+        ))
+        by_line = f" on behalf of *{target_username}*" if target_username != username else ""
+        await say(
+            text=f"✅ Access revoked{by_line}. Role `{required_role}` has been removed from *{target_username}*.\n_Original request ID: `{revoke_request_id}`_",
+            thread_ts=thread_ts,
+            channel=channel,
+        )
         return
 
     # Update request record with matched asset info

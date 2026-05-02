@@ -105,6 +105,13 @@ class AccessRequestRepository:
             {"$set": {"status": status.value, "updated_at": datetime.now(timezone.utc)}},
         )
 
+    async def find_active_grant_for_role(self, username: str, role_name: str) -> Optional[dict]:
+        """Find the most recent granted request for a user+role — used for revoke flows."""
+        return await self.col.find_one(
+            {"user_id": username, "required_role_id": role_name, "status": "granted"},
+            sort=[("updated_at", -1)],
+        )
+
     async def update_matched_asset(
         self,
         request_id: str,

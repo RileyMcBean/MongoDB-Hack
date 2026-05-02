@@ -54,12 +54,16 @@ async def intent_agent(state: AccessAgentState) -> dict:
         f"- [{m['type']}] {m['content']}" for m in past_memories[:5]
     ) or "No prior memory."
 
-    prompt = f"""You are an access governance assistant. A user has made a data access request.
+    all_usernames = [a.get("username") for a in await db["users"].find({}, {"username": 1}).to_list(length=50)]
+
+    prompt = f"""You are an access governance assistant. A user has made a request.
 
 User profile:
 - Username: {username}
 - Department: {user_profile.get('department', 'unknown')}
 - Current roles: {user_profile.get('current_roles', [])}
+
+Known users in the system: {all_usernames}
 
 Relevant memory from past decisions:
 {memory_summary}
@@ -69,9 +73,12 @@ Available data assets:
 
 User request: "{raw_request}"
 
-Task: Identify which data asset the user is asking for and what role should be granted.
+Task: Determine what the user wants and identify the relevant data asset.
+
 Respond in JSON only, no other text:
 {{
+  "intent_type": "<'grant' if they want access, 'revoke' if they want access removed>",
+  "target_username": "<the user whose access should be changed — usually '{username}', but may be another username if an admin is acting on someone else's behalf>",
   "matched_asset_name": "<exact name from the asset list, or null if no match>",
   "required_role": "<role name from the matched asset, or null>",
   "intent_summary": "<one sentence plain-English description of what the user needs and why>"
@@ -80,14 +87,21 @@ Respond in JSON only, no other text:
     matched_asset = None
     required_role = None
     intent_summary = raw_request
+    intent_type = "grant"
+    target_username = username
 
     try:
         llm = get_llm()
         response = llm.invoke(prompt).content.strip()
-        # Extract JSON from response
         start = response.find("{")
         end = response.rfind("}") + 1
         parsed = json.loads(response[start:end])
+
+        intent_type = parsed.get("intent_type", "grant")
+        target_username = parsed.get("target_username") or username
+        # Validate target_username is a real user; fall back to requester
+        if target_username not in all_usernames:
+            target_username = username
 
         asset_name = parsed.get("matched_asset_name")
         if asset_name:
@@ -100,7 +114,6 @@ Respond in JSON only, no other text:
         intent_summary = parsed.get("intent_summary", raw_request)
     except Exception as e:
         logger.error(f"Intent agent LLM call failed: {e}")
-        # Fallback: keyword matching
         from ..asset_matcher import match_asset
         matched_asset = await match_asset(db, raw_request)
         if matched_asset:
@@ -110,10 +123,12 @@ Respond in JSON only, no other text:
 
     monologue = state.get("inner_monologue", [])
     monologue.append(
-        f"Intent: '{intent_summary}' → asset='{matched_asset['name'] if matched_asset else None}', role='{required_role}'"
+        f"Intent: {intent_type} for {target_username} → asset='{matched_asset['name'] if matched_asset else None}', role='{required_role}'"
     )
 
     return {
+        "intent_type": intent_type,
+        "target_username": target_username,
         "user_profile": user_profile,
         "candidate_assets": all_assets,
         "past_memories": past_memories,
