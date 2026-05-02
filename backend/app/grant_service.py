@@ -1,6 +1,8 @@
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from .models import AuditEvent, RequestStatus
 from .repositories import UserRepository, AccessRequestRepository, AuditEventRepository
+from .doc_generator import generate_and_store
 
 
 async def execute_grant(
@@ -9,7 +11,7 @@ async def execute_grant(
     username: str,
     role_name: str,
 ) -> None:
-    """Synthetically grant a role: add to user's current_roles, update request, write audit."""
+    """Synthetically grant a role: add to user's current_roles, update request, write audit, generate doc."""
     await UserRepository(db).add_role(username, role_name)
     await AccessRequestRepository(db).update_status(request_id, RequestStatus.granted)
     await AuditEventRepository(db).insert(AuditEvent(
@@ -19,6 +21,18 @@ async def execute_grant(
         actor="system",
         metadata={"username": username, "role_name": role_name},
     ))
+
+    # Look up asset name and tier for the document
+    req = await AccessRequestRepository(db).find_by_id(request_id)
+    asset_name = role_name  # fallback
+    tier = "unknown"
+    if req and req.get("matched_asset_id"):
+        asset = await db["data_assets"].find_one({"_id": ObjectId(req["matched_asset_id"])})
+        if asset:
+            asset_name = asset["name"]
+        tier = req.get("risk_tier", "unknown")
+
+    await generate_and_store(db, request_id, username, role_name, asset_name, tier)
 
 
 async def rollback_grant(

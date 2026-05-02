@@ -4,7 +4,8 @@ from pydantic import BaseModel
 from .database import get_db
 from .repositories import (
     DataAssetRepository, ApprovalPolicyRepository,
-    UserRepository, AccessRequestRepository, ApprovalTaskRepository, AuditEventRepository,
+    UserRepository, AccessRequestRepository, ApprovalTaskRepository,
+    AuditEventRepository, GeneratedDocumentRepository,
 )
 from .models import AccessRequest, ApprovalTask, AuditEvent, RequestStatus
 from .policy_engine import evaluate
@@ -200,3 +201,24 @@ async def get_audit_trail(request_id: str):
     for e in events:
         e.pop("_id", None)
     return events
+
+
+@router.get("/audit")
+async def get_recent_audit(limit: int = 20):
+    """Return the most recent audit events across all requests."""
+    db = get_db()
+    events = await AuditEventRepository(db).find_recent(limit=min(limit, 100))
+    for e in events:
+        e.pop("_id", None)
+    return events
+
+
+@router.get("/docs/{request_id}")
+async def get_grant_doc(request_id: str):
+    """Return the generated markdown document for a granted request."""
+    db = get_db()
+    doc = await GeneratedDocumentRepository(db).find_by_request_id(request_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found for this request")
+    doc.pop("_id", None)
+    return doc

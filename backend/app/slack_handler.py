@@ -75,8 +75,9 @@ def build_approval_blocks(
     ]
 
 
-def build_grant_message(username: str, asset_name: str, role: str) -> str:
-    return f"✅ Access granted to *{username}*\n*Asset:* {asset_name}\n*Role:* `{role}`"
+def build_grant_message(username: str, asset_name: str, role: str, request_id: str = "") -> str:
+    ref = f"\n_Request ID: `{request_id}`_" if request_id else ""
+    return f"✅ Access granted to *{username}*\n*Asset:* {asset_name}\n*Role:* `{role}`{ref}"
 
 
 def build_pending_message(username: str, asset_name: str, tier: str) -> str:
@@ -167,7 +168,7 @@ async def handle_message(event: dict, say, client):
     if decision.auto_grant:
         await execute_grant(db, request_id=request_id, username=username, role_name=asset["required_role"])
         await say(
-            text=build_grant_message(username, asset["name"], asset["required_role"]),
+            text=build_grant_message(username, asset["name"], asset["required_role"], request_id),
             thread_ts=thread_ts,
             channel=channel,
         )
@@ -247,7 +248,11 @@ async def handle_approve(ack, body, client):
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"✅ *Approved* by <@{approver_slack_id}>\nRole `{req['required_role_id']}` granted to *{req['user_id']}*",
+                "text": (
+                    f"✅ *Approved* by <@{approver_slack_id}>\n"
+                    f"Role `{req['required_role_id']}` granted to *{req['user_id']}*\n"
+                    f"_Request ID: `{request_id}`_"
+                ),
             },
         }],
     )
