@@ -319,10 +319,12 @@ async def handle_approve(ack, body, client):
 
 @bolt_app.action("reject_request")
 async def handle_reject(ack, body, client):
+    """Open a modal asking for a rejection reason before confirming."""
     await ack()
     approver_slack_id = body["user"]["id"]
     channel = body["container"]["channel_id"]
     message_ts = body["container"]["message_ts"]
+    trigger_id = body["trigger_id"]
 
     if not await _is_admin(client, approver_slack_id):
         await client.chat_postMessage(
@@ -337,6 +339,77 @@ async def handle_reject(ack, body, client):
         token = payload["token"]
 
         db = get_db()
+        task = await ApprovalTaskRepository(db).find_by_request_id(request_id)
+        if not task or task["approval_token"] != token:
+            await client.chat_postMessage(channel=channel, text="⚠️ Invalid or expired approval token.")
+            return
+        if task["status"] != RequestStatus.pending.value:
+            await client.chat_postMessage(channel=channel, text="⚠️ This request has already been decided.")
+            return
+
+        req = await AccessRequestRepository(db).find_by_id(request_id)
+
+        await client.views_open(
+            trigger_id=trigger_id,
+            view={
+                "type": "modal",
+                "callback_id": "reject_reason_modal",
+                "title": {"type": "plain_text", "text": "Reject Access Request"},
+                "submit": {"type": "plain_text", "text": "Confirm Rejection"},
+                "close": {"type": "plain_text", "text": "Cancel"},
+                "private_metadata": json.dumps({
+                    "request_id": request_id,
+                    "token": token,
+                    "channel": channel,
+                    "message_ts": message_ts,
+                }),
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": (
+                                f"*Rejecting request from {req['user_id']}*\n"
+                                f"Role requested: `{req['required_role_id']}`"
+                            ),
+                        },
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "reason_block",
+                        "label": {"type": "plain_text", "text": "Reason for rejection"},
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "reason_input",
+                            "multiline": True,
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Explain why this request is being rejected...",
+                            },
+                        },
+                    },
+                ],
+            },
+        )
+    except Exception as e:
+        logger.error(f"handle_reject error: {e}", exc_info=True)
+        await client.chat_postMessage(channel=channel, text=f"⚠️ Could not open rejection form: {e}")
+
+
+@bolt_app.view("reject_reason_modal")
+async def handle_reject_modal(ack, body, client, view):
+    """Execute rejection with the custom reason from the modal."""
+    await ack()
+    approver_slack_id = body["user"]["id"]
+    metadata = json.loads(view["private_metadata"])
+    request_id = metadata["request_id"]
+    token = metadata["token"]
+    channel = metadata["channel"]
+    message_ts = metadata["message_ts"]
+    custom_reason = view["state"]["values"]["reason_block"]["reason_input"]["value"] or ""
+
+    try:
+        db = get_db()
         task_repo = ApprovalTaskRepository(db)
         req_repo = AccessRequestRepository(db)
         audit_repo = AuditEventRepository(db)
@@ -350,50 +423,42 @@ async def handle_reject(ack, body, client):
             return
 
         req = await req_repo.find_by_id(request_id)
-        await task_repo.decide(token, RequestStatus.rejected, "Rejected via Slack")
+        await task_repo.decide(token, RequestStatus.rejected, custom_reason or "Rejected via Slack")
         await req_repo.update_status(request_id, RequestStatus.rejected)
         await audit_repo.insert(AuditEvent(
-            request_id=request_id, event_type="request_rejected",
-            description=f"Rejected via Slack by {approver_slack_id}",
+            request_id=request_id,
+            event_type="request_rejected",
+            description=(
+                f"Rejected via Slack by {approver_slack_id}. Reason: {custom_reason}"
+                if custom_reason else f"Rejected via Slack by {approver_slack_id}"
+            ),
             actor=approver_slack_id,
+            metadata={"reason": custom_reason},
         ))
 
-        # Pull the policy rationale from the audit trail to explain the rejection
-        events = await audit_repo.find_by_request_id(request_id)
-        approval_event = next(
-            (e for e in events if e["event_type"] == "approval_requested"), None
-        )
-        rationale = ""
-        if approval_event:
-            raw = approval_event.get("description", "")
-            rationale = raw.replace("Approval required. Rationale: ", "").strip()
-
         # Update the approval card in #access-approvals
+        card_text = f"❌ *Rejected* by <@{approver_slack_id}>\nAccess denied for *{req['user_id']}*"
+        if custom_reason:
+            card_text += f"\n*Reason:* {custom_reason}"
         await client.chat_update(
             channel=channel,
             ts=message_ts,
             text=f"❌ Rejected by <@{approver_slack_id}>",
-            blocks=[{
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"❌ *Rejected* by <@{approver_slack_id}>\nAccess denied for *{req['user_id']}*",
-                },
-            }],
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": card_text}}],
         )
 
-        # Notify the requester in the public channel with the reason
-        reason_text = f"\n\n*Reason:* {rationale}" if rationale else ""
+        # Notify the requester in the public channel
+        reason_line = f"\n\n*Reason:* {custom_reason}" if custom_reason else ""
         await client.chat_postMessage(
             channel=settings.slack_request_channel,
             text=(
                 f"❌ *Access request denied* for *{req['user_id']}*\n"
                 f"Your request for role `{req['required_role_id']}` was reviewed and rejected "
-                f"by <@{approver_slack_id}>.{reason_text}\n\n"
-                f"If you believe this decision is incorrect, please contact your manager or the data governance team.\n"
+                f"by <@{approver_slack_id}>.{reason_line}\n\n"
+                f"If you believe this is incorrect, please contact your manager or the data governance team.\n"
                 f"_Request ID: `{request_id}`_"
             ),
         )
     except Exception as e:
-        logger.error(f"handle_reject error: {e}", exc_info=True)
+        logger.error(f"handle_reject_modal error: {e}", exc_info=True)
         await client.chat_postMessage(channel=channel, text=f"⚠️ Rejection failed: {e}")
