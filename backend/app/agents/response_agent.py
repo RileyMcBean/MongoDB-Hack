@@ -33,16 +33,25 @@ async def response_agent(state: AccessAgentState) -> dict:
     tier = matched_asset["sensitivity"] if matched_asset else "unknown"
     asset_owner = matched_asset.get("owner", "unknown") if matched_asset else "unknown"
 
+    raw_request = state.get("raw_request", "")
+    user_dept = state.get("user_profile", {}).get("department", "unknown")
+
     # ── 1. Slack message ─────────────────────────────────────────────────────
     if auto_grant:
-        slack_prompt = f"""Write a short Slack message (2-3 sentences) confirming that {username}'s access request has been automatically approved.
+        slack_prompt = f"""You are Access Agent, a data governance bot responding in Slack.
 
-Context: {intent_summary}
-Asset: {asset_name} (sensitivity: {tier})
-Role granted: {required_role}
-Reason: {policy_rationale}
+User's exact message: "{raw_request}"
+User: {username} ({user_dept} team)
+What they need: {intent_summary}
+Asset: {asset_name}
+Role just granted: `{required_role}`
+Why it was auto-approved: {policy_rationale}
 
-Be friendly and professional. Mention the role granted and why it was auto-approved. No bullet points."""
+Write 2-3 sentences directly to {username}. Reference what they specifically asked for.
+Confirm the role granted. Mention briefly why it was auto-approved.
+Sound like a helpful colleague — not a legal document or a corporate bot.
+Do not mention their existing roles. No bullet points. No headers."""
+
     elif not matched_asset:
         slack_message = (
             "I couldn't match your request to a known data asset. "
@@ -54,14 +63,21 @@ Be friendly and professional. Mention the role granted and why it was auto-appro
             "inner_monologue": state.get("inner_monologue", []) + ["No asset matched — returning help message."],
         }
     else:
-        slack_prompt = f"""Write a short Slack message (2-3 sentences) informing {username} that their access request requires approval.
+        slack_prompt = f"""You are Access Agent, a data governance bot responding in Slack.
 
-Context: {intent_summary}
+User's exact message: "{raw_request}"
+User: {username} ({user_dept} team)
+What they need: {intent_summary}
 Asset: {asset_name} (sensitivity: {tier})
-Role requested: {required_role}
-Reason approval is required: {policy_rationale}
+Role they're requesting: `{required_role}`
+Why this needs approval: {policy_rationale}
+Who will review it: {approver_role or "the data owner"}
 
-Be clear and professional. Tell them what happens next. No bullet points."""
+Write 2-3 sentences directly to {username}. Reference what they specifically asked for.
+Explain in plain English why it needs a human to review it — be specific, not generic.
+Tell them what happens next (who reviews, they'll be notified).
+Sound like a helpful colleague — not a legal document. Do not mention their existing roles.
+No bullet points. No headers."""
 
     slack_message = f"⏳ Your request for access to *{asset_name}* has been sent for approval."
     try:
