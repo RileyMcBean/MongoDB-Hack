@@ -5,21 +5,12 @@ The DB rules decide auto_grant/needs_approval.
 The LLM writes a plain-English explanation of WHY.
 """
 import logging
-import os
 from .state import AccessAgentState
+from .llm import get_llm
 from ..repositories import ApprovalPolicyRepository
 from ..models import RiskTier
 
 logger = logging.getLogger(__name__)
-
-
-def _get_llm():
-    from langchain_fireworks import ChatFireworks
-    return ChatFireworks(
-        model="accounts/fireworks/models/llama-v3p3-70b-instruct",
-        api_key=os.environ.get("FIREWORKS_API_KEY", ""),
-        temperature=0,
-    )
 
 
 async def policy_agent(state: AccessAgentState) -> dict:
@@ -69,7 +60,7 @@ Do not use bullet points. Plain prose only."""
         f"Policy: {decision_text}."
     )
     try:
-        llm = _get_llm()
+        llm = get_llm()
         policy_rationale = llm.invoke(prompt).content.strip()
     except Exception as e:
         logger.error(f"Policy agent LLM rationale failed: {e}")

@@ -7,20 +7,11 @@ and writes a plain-English summary of the intent.
 """
 import json
 import logging
-import os
 from .state import AccessAgentState
+from .llm import get_llm
 from ..repositories import UserRepository, DataAssetRepository, MemoryEntryRepository
 
 logger = logging.getLogger(__name__)
-
-
-def _get_llm():
-    from langchain_fireworks import ChatFireworks
-    return ChatFireworks(
-        model="accounts/fireworks/models/llama-v3p3-70b-instruct",
-        api_key=os.environ.get("FIREWORKS_API_KEY", ""),
-        temperature=0,
-    )
 
 
 async def intent_agent(state: AccessAgentState) -> dict:
@@ -86,7 +77,7 @@ Respond in JSON only, no other text:
     intent_summary = raw_request
 
     try:
-        llm = _get_llm()
+        llm = get_llm()
         response = llm.invoke(prompt).content.strip()
         # Extract JSON from response
         start = response.find("{")

@@ -3,22 +3,13 @@ Response Agent — generates the Slack message, the full grant document,
 and writes an episodic memory entry for this decision.
 """
 import logging
-import os
 from datetime import datetime, timezone
 from .state import AccessAgentState
+from .llm import get_llm
 from ..repositories import MemoryEntryRepository
 from ..models import MemoryEntry, MemoryType
 
 logger = logging.getLogger(__name__)
-
-
-def _get_llm():
-    from langchain_fireworks import ChatFireworks
-    return ChatFireworks(
-        model="accounts/fireworks/models/llama-v3p3-70b-instruct",
-        api_key=os.environ.get("FIREWORKS_API_KEY", ""),
-        temperature=0.2,
-    )
 
 
 def _fmt_now() -> str:
@@ -73,7 +64,7 @@ Be clear and professional. Tell them what happens next. No bullet points."""
 
     slack_message = f"⏳ Your request for access to *{asset_name}* has been sent for approval."
     try:
-        llm = _get_llm()
+        llm = get_llm()
         slack_message = llm.invoke(slack_prompt).content.strip()
     except Exception as e:
         logger.error(f"Response agent Slack message LLM failed: {e}")
@@ -102,7 +93,7 @@ Do not use bullet points or headers — plain prose only."""
 
         justification = policy_rationale
         try:
-            llm = _get_llm()
+            llm = get_llm()
             justification = llm.invoke(doc_prompt).content.strip()
         except Exception as e:
             logger.error(f"Response agent doc LLM failed: {e}")

@@ -118,7 +118,7 @@ class AccessRequestRepository:
             {"$set": {
                 "matched_asset_id": asset_id,
                 "required_role_id": role_name,
-                "risk_tier": tier.value,
+                "risk_tier": tier.value if hasattr(tier, "value") else tier,
                 "rationale": rationale,
                 "updated_at": datetime.now(timezone.utc),
             }},
