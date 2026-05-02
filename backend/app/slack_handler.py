@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 # Fix macOS Python 3.13 SSL cert issue with aiohttp
 _ssl_context = ssl.create_default_context(cafile=certifi.where())
 
+_slack_client = AsyncWebClient(token=settings.slack_bot_token, ssl=_ssl_context)
 bolt_app = AsyncApp(
-    token=settings.slack_bot_token,
     signing_secret=settings.slack_signing_secret,
-    client=AsyncWebClient(token=settings.slack_bot_token, ssl=_ssl_context),
+    client=_slack_client,
 )
 handler = AsyncSlackRequestHandler(bolt_app)
 
@@ -102,11 +102,20 @@ async def handle_message(event: dict, say, client):
     if not text:
         return
 
-    # Resolve Slack user → username via display name
+    # Resolve Slack user → username via display name (requires users:read scope)
+    username = None
     try:
         user_info = await client.users_info(user=user_slack_id)
-        username = user_info["user"]["profile"].get("display_name") or user_info["user"]["name"]
-    except Exception:
+        profile = user_info["user"]["profile"]
+        # Try display_name, then real_name, then name — in that order
+        username = (
+            profile.get("display_name_normalized")
+            or profile.get("display_name")
+            or profile.get("real_name_normalized")
+            or user_info["user"].get("name")
+        )
+    except Exception as e:
+        logger.error(f"users_info failed for {user_slack_id}: {e}")
         username = user_slack_id
 
     db = get_db()
