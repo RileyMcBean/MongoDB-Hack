@@ -1,8 +1,11 @@
 import json
 import logging
 import secrets
+import ssl
+import certifi
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
+from slack_sdk.web.async_client import AsyncWebClient
 from .config import settings
 from .database import get_db
 from .asset_matcher import match_asset
@@ -15,9 +18,13 @@ from .models import AccessRequest, ApprovalTask, AuditEvent, RequestStatus
 
 logger = logging.getLogger(__name__)
 
+# Fix macOS Python 3.13 SSL cert issue with aiohttp
+_ssl_context = ssl.create_default_context(cafile=certifi.where())
+
 bolt_app = AsyncApp(
     token=settings.slack_bot_token,
     signing_secret=settings.slack_signing_secret,
+    client=AsyncWebClient(token=settings.slack_bot_token, ssl=_ssl_context),
 )
 handler = AsyncSlackRequestHandler(bolt_app)
 
