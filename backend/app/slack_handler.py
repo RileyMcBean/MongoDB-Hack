@@ -8,13 +8,13 @@ from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_sdk.web.async_client import AsyncWebClient
 from .config import settings
 from .database import get_db
-from .asset_matcher import match_asset
-from .policy_engine import evaluate
 from .grant_service import execute_grant
 from .repositories import (
     UserRepository, AccessRequestRepository, ApprovalTaskRepository, AuditEventRepository,
+    GeneratedDocumentRepository,
 )
-from .models import AccessRequest, ApprovalTask, AuditEvent, RequestStatus
+from .models import AccessRequest, ApprovalTask, AuditEvent, RequestStatus, GeneratedDocument
+from .agents.graph import run_access_agent
 
 logger = logging.getLogger(__name__)
 
@@ -130,45 +130,66 @@ async def handle_message(event: dict, say, client):
         )
         return
 
-    asset = await match_asset(db, text)
-    if not asset:
-        await say(
-            text="I couldn't match your request to a known data asset. Try mentioning: *sales reporting*, *product catalog*, *analytics events*, or *customer PII*.",
-            thread_ts=thread_ts,
-            channel=channel,
-        )
-        return
-
-    try:
-        decision = await evaluate(db, asset)
-    except ValueError as e:
-        await say(text=f"Policy error: {e}", thread_ts=thread_ts, channel=channel)
-        return
-
-    req_repo = AccessRequestRepository(db)
+    # ── Run the agent pipeline ────────────────────────────────────────────────
+    # Write the request record first so we have a request_id for the agents
     audit_repo = AuditEventRepository(db)
+    req_repo = AccessRequestRepository(db)
     request_id = await req_repo.insert(AccessRequest(
         user_id=username,
         raw_request=text,
-        risk_tier=decision.tier,
-        matched_asset_id=str(asset["_id"]),
-        required_role_id=asset["required_role"],
-        rationale=f"Asset '{asset['name']}' has sensitivity '{decision.tier.value}'",
+    ))
+    await audit_repo.insert(AuditEvent(
+        request_id=request_id,
+        event_type="request_received",
+        description=f"Slack request from '{username}': {text}",
+        actor="slack_bot",
     ))
 
-    for event_type, desc in [
-        ("request_received", f"Slack request from '{username}': {text}"),
-        ("asset_matched", f"Matched '{asset['name']}' (sensitivity: {decision.tier.value})"),
-        ("policy_evaluated", f"auto_grant={decision.auto_grant}, tier={decision.tier.value}"),
-    ]:
-        await audit_repo.insert(AuditEvent(
-            request_id=request_id, event_type=event_type, description=desc, actor="slack_bot",
-        ))
+    try:
+        result = await run_access_agent(db, username=username, raw_request=text, request_id=request_id)
+    except Exception as e:
+        logger.error(f"Agent pipeline failed: {e}", exc_info=True)
+        await say(text=f"Sorry, something went wrong processing your request: {e}", thread_ts=thread_ts, channel=channel)
+        return
 
-    if decision.auto_grant:
-        await execute_grant(db, request_id=request_id, username=username, role_name=asset["required_role"])
+    matched_asset = result.get("matched_asset")
+    required_role = result.get("required_role")
+
+    if not matched_asset or not required_role:
+        await say(text=result.get("slack_message", "I couldn't match your request to a known data asset."), thread_ts=thread_ts, channel=channel)
+        return
+
+    # Update request record with matched asset info
+    await req_repo.update_matched_asset(
+        request_id,
+        asset_id=matched_asset["_id"],
+        role_name=required_role,
+        tier=result["matched_asset"]["sensitivity"],
+        rationale=result.get("intent_summary", ""),
+    )
+    await audit_repo.insert(AuditEvent(
+        request_id=request_id,
+        event_type="asset_matched",
+        description=f"LLM matched '{matched_asset['name']}' (sensitivity: {matched_asset['sensitivity']})",
+        actor="intent_agent",
+    ))
+    await audit_repo.insert(AuditEvent(
+        request_id=request_id,
+        event_type="policy_evaluated",
+        description=f"auto_grant={result['auto_grant']}, tier={matched_asset['sensitivity']}",
+        actor="policy_agent",
+    ))
+
+    if result["auto_grant"]:
+        await execute_grant(db, request_id=request_id, username=username, role_name=required_role)
+        # Store LLM-generated grant doc
+        if result.get("grant_doc_markdown"):
+            await GeneratedDocumentRepository(db).insert(GeneratedDocument(
+                request_id=request_id,
+                markdown=result["grant_doc_markdown"],
+            ))
         await say(
-            text=build_grant_message(username, asset["name"], asset["required_role"], request_id),
+            text=result.get("slack_message") or build_grant_message(username, matched_asset["name"], required_role, request_id),
             thread_ts=thread_ts,
             channel=channel,
         )
@@ -178,17 +199,17 @@ async def handle_message(event: dict, say, client):
     token = secrets.token_urlsafe(16)
     await ApprovalTaskRepository(db).insert(ApprovalTask(
         request_id=request_id,
-        approver=decision.approver_role or "data_owner",
+        approver=result.get("approver_role") or "data_owner",
         approval_token=token,
     ))
     await audit_repo.insert(AuditEvent(
         request_id=request_id, event_type="approval_requested",
-        description=f"Approval required from '{decision.approver_role}'",
+        description=f"Approval required. Rationale: {result.get('policy_rationale', '')}",
         actor="slack_bot",
     ))
 
     await say(
-        text=build_pending_message(username, asset["name"], decision.tier.value),
+        text=result.get("slack_message") or build_pending_message(username, matched_asset["name"], matched_asset["sensitivity"]),
         thread_ts=thread_ts,
         channel=channel,
     )
@@ -197,9 +218,9 @@ async def handle_message(event: dict, say, client):
         channel=settings.slack_approvals_channel,
         blocks=build_approval_blocks(
             requester=username,
-            asset_name=asset["name"],
-            tier=decision.tier.value,
-            role=asset["required_role"],
+            asset_name=matched_asset["name"],
+            tier=matched_asset["sensitivity"],
+            role=required_role,
             request_id=request_id,
             token=token,
         ),

@@ -176,6 +176,9 @@ class MemoryEntryRepository:
     async def find_by_tags(self, tags: list[str]) -> list[dict]:
         return await self.col.find({"tags": {"$in": tags}}).to_list(length=50)
 
+    async def find_recent(self, limit: int = 10) -> list[dict]:
+        return await self.col.find().sort("created_at", -1).limit(limit).to_list(length=limit)
+
 
 class GeneratedDocumentRepository:
     def __init__(self, db: AsyncIOMotorDatabase):

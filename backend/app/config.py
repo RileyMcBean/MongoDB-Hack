@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
     slack_request_channel: str = "access-requests"
     slack_approvals_channel: str = "access-approvals"
+    fireworks_api_key: str = ""
+    langchain_api_key: str = ""
+    langchain_tracing_v2: str = "false"
 
     model_config = {"env_file": ".env"}
 
