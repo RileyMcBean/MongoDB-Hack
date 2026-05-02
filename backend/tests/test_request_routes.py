@@ -2,15 +2,20 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+from app.config import settings
 from app.database import connect_db, close_db, get_db
 from app.models import User, Role, DataAsset, ApprovalPolicy, RiskTier
 from app.repositories import (
     UserRepository, RoleRepository, DataAssetRepository, ApprovalPolicyRepository,
 )
 
+TEST_DB_NAME = "access_agent_test"
+
 
 @pytest_asyncio.fixture
 async def client_with_seed():
+    # Point the app at the test database for the duration of this fixture
+    object.__setattr__(settings, "db_name", TEST_DB_NAME)
     await connect_db()
     db = get_db()
 
@@ -50,7 +55,11 @@ async def client_with_seed():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c, db
 
+    # Teardown: drop all test collections and restore prod DB name
+    for col in await db.list_collection_names():
+        await db[col].drop()
     await close_db()
+    object.__setattr__(settings, "db_name", "access_agent")
 
 
 @pytest.mark.asyncio
