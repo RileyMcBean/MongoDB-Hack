@@ -33,6 +33,12 @@ class UserRepository:
             {"$addToSet": {"current_roles": role_name}},
         )
 
+    async def remove_role(self, username: str, role_name: str) -> None:
+        await self.col.update_one(
+            {"username": username},
+            {"$pull": {"current_roles": role_name}},
+        )
+
 
 class RoleRepository:
     def __init__(self, db: AsyncIOMotorDatabase):

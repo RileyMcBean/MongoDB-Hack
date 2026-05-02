@@ -16,6 +16,7 @@ class RequestStatus(str, Enum):
     rejected = "rejected"
     granted = "granted"
     failed = "failed"
+    rolled_back = "rolled_back"
 
 
 class MemoryType(str, Enum):

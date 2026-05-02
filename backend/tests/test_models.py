@@ -87,3 +87,7 @@ def test_generated_document_model():
         markdown="# Access Grant Summary\n\nUser: alice",
     )
     assert "alice" in d.markdown
+
+
+def test_request_status_includes_rolled_back():
+    assert RequestStatus.rolled_back == "rolled_back"
